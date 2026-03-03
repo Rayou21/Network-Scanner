@@ -1,14 +1,17 @@
-# 🧪 NetworkScanner – Python Network Scanner (python‑nmap)
+# 🧪 NetworkScanner – Multi-Threaded Python Scanner (python-nmap)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
 ![Library](https://img.shields.io/badge/Library-python--nmap-orange)
 ![Tool](https://img.shields.io/badge/Tool-Network%20Scanner-lightgrey)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-**NetworkScanner** is a Python script that automates network discovery using the `python-nmap` library.  
-It performs a **ping sweep**, identifies **active hosts**, scans **ports 1–1024**, and can optionally export results to **CSV**.
+**NetworkScanner** is an advanced Python script that automates network discovery and enumeration. By leveraging the `python-nmap` library and **multi-threading**, it significantly speeds up the scanning process while providing deep insights into the target network.
 
-Designed for **cybersecurity learning**, **network enumeration**, and **Python automation practice**.
+Designed for:
+
+- 🛡️ Cybersecurity learning  
+- 🌐 Advanced network enumeration  
+- ⚙️ Python performance optimization  
 
 ---
 
@@ -16,132 +19,145 @@ Designed for **cybersecurity learning**, **network enumeration**, and **Python a
 
 NetworkScanner allows you to:
 
-- 🌐 Discover active hosts on a network  
-- 🔍 Scan ports 1–1024  
-- 🏷️ Identify services running on open ports  
-- 📄 Export results to CSV  
-- ⚙️ Automate Nmap scans through Python  
-
-This project continues my learning journey in:
-
-- Python automation  
-- Network scanning  
-- Cybersecurity tooling  
-- CLI development  
+- 🌐 **Discover active hosts** via high-speed ping sweeps  
+- ⚡ **Run multi-threaded scans** to process multiple hosts simultaneously  
+- 🔍 **Scan ports 1–1024** with service version detection  
+- 💻 **Perform OS fingerprinting** (Windows, Linux, etc.)  
+- 📄 **Export detailed reports** to CSV for further analysis  
 
 ---
 
 ## ✨ Features
 
-- CIDR input (e.g., `192.168.1.0/24`)  
-- Ping sweep using Nmap (`-n -sn`)  
-- Port scanning (`1-1024`)  
-- Service detection  
-- CSV export (`--csv`)  
-- Clean and structured output  
-- Works on Windows, Linux, macOS  
+- **Concurrent Execution** – Uses `ThreadPoolExecutor` to scan multiple targets in parallel  
+- **Service Versioning** – Identifies service name and version (e.g., `Apache 2.4.41`)  
+- **OS Detection** – Uses Nmap fingerprinting engine (`-O`)  
+- **Performance Control** – Adjustable thread count via CLI  
+- **Pre-flight Checks** – Ensures Nmap is installed and accessible  
+- **Clean Output** – Structured terminal display and professional CSV formatting  
 
 ---
 
 ## 🔧 Usage
 
-### Basic scan (ping sweep + ports)
+### ▶ Basic Multi-Threaded Scan
 
 ```bash
 python network_scan.py 192.168.1.0/24
 ```
 
-### Export results to CSV
+### ▶ Custom Thread Count
 
 ```bash
-python network_scan.py 192.168.1.0/24 --csv
+python network_scan.py 192.168.1.0/24 --threads 20
 ```
 
-This generates:
+### ▶ Scan + CSV Export
 
-```
-scan_report.csv
-```
-
-Format:
-
-```
-IP ; Port ; Protocol ; State ; Service
+```bash
+python network_scan.py 192.168.1.0/24 --threads 20 --csv
 ```
 
 ---
 
-## 💻 Script – network_scan.py
+## 💻 Script – `network_scan.py`
 
 ```python
 #!/usr/bin/env python3
 import nmap
 import argparse
 import csv
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+def check_nmap_installed():
+    try:
+        nmap.PortScanner()
+    except nmap.PortScannerError:
+        print("[-] Error: Nmap is not installed or not found in PATH.")
+        sys.exit(1)
 
 def ping_sweep(network):
     nm = nmap.PortScanner()
     print(f"[+] Running ping sweep on {network}...")
     nm.scan(hosts=network, arguments='-n -sn')
+    return [host for host in nm.all_hosts() if nm[host].state() == "up"]
 
-    up_hosts = []
-    for host in nm.all_hosts():
-        if nm[host].state() == "up":
-            up_hosts.append(host)
-    return up_hosts
-
-
-def scan_host_ports(host):
+def scan_host_full(host):
     nm = nmap.PortScanner()
-    print(f"[+] Scanning ports 1–1024 on {host}...")
-    nm.scan(host, '1-1024')
+    try:
+        nm.scan(host, '1-1024', arguments='-sV -O')
+    except Exception:
+        return host, [], "Unknown"
+
+    os_guess = "Unknown"
+    if host in nm.all_hosts():
+        if 'osmatch' in nm[host] and len(nm[host]['osmatch']) > 0:
+            os_guess = nm[host]['osmatch'][0]['name']
 
     results = []
-    for proto in nm[host].all_protocols():
-        for port in sorted(nm[host][proto].keys()):
-            state = nm[host][proto][port]['state']
-            service = nm[host][proto][port].get('name', 'unknown')
-            if state == "open":
-                results.append((port, proto, state, service))
-    return results
+    if host in nm.all_hosts():
+        for proto in nm[host].all_protocols():
+            for port in sorted(nm[host][proto].keys()):
+                details = nm[host][proto][port]
+                if details['state'] == "open":
+                    results.append({
+                        "port": port,
+                        "proto": proto,
+                        "service": details.get('name', 'unknown'),
+                        "version": f"{details.get('product', '')} {details.get('version', '')}".strip()
+                    })
 
+    return host, results, os_guess
 
 def save_to_csv(data, filename="scan_report.csv"):
-    with open(filename, "w", newline="") as f:
+    with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, delimiter=';')
-        writer.writerow(["IP", "Port", "Protocol", "State", "Service"])
-        for row in data:
-            writer.writerow(row)
-    print(f"[+] Report saved to {filename}")
+        writer.writerow(["IP", "OS", "Port", "Protocol", "Service", "Version"])
+        for host_info in data:
+            ip, os_name = host_info['ip'], host_info['os']
+            for p in host_info['ports']:
+                writer.writerow([ip, os_name, p['port'], p['proto'], p['service'], p['version']])
 
+    print(f"\n[+] Full report saved to: {filename}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Network scanner using python-nmap")
-    parser.add_argument("network", help="Network in CIDR notation (e.g. 192.168.1.0/24)")
+    check_nmap_installed()
+
+    parser = argparse.ArgumentParser(description="Multi-threaded Network Scanner")
+    parser.add_argument("network", help="Network range (e.g., 192.168.1.0/24)")
+    parser.add_argument("--threads", type=int, default=10, help="Number of threads (default: 10)")
     parser.add_argument("--csv", action="store_true", help="Export results to CSV")
     args = parser.parse_args()
 
     up_hosts = ping_sweep(args.network)
 
-    print("\n=== Hosts UP ===")
-    for host in up_hosts:
-        print(host)
+    if not up_hosts:
+        print("[-] No active hosts found.")
+        return
 
-    all_results = []
-    for host in up_hosts:
-        ports = scan_host_ports(host)
-        print(f"\n=== Results for {host} ===")
-        if not ports:
-            print("No open ports found.")
-        else:
-            for port, proto, state, service in ports:
-                print(f"{host} : {port}/{proto} : {state} ({service})")
-                all_results.append((host, port, proto, state, service))
+    final_data = []
+
+    print(f"[+] Found {len(up_hosts)} active hosts. Starting detailed scan...\n")
+
+    with ThreadPoolExecutor(max_workers=args.threads) as executor:
+        futures = [executor.submit(scan_host_full, host) for host in up_hosts]
+
+        for future in as_completed(futures):
+            ip, ports, os_guess = future.result()
+
+            print(f"--- {ip} ({os_guess}) ---")
+            for p in ports:
+                print(f"  > Port {p['port']}/{p['proto']} : {p['service']} {p['version']}")
+
+            final_data.append({
+                "ip": ip,
+                "os": os_guess,
+                "ports": ports
+            })
 
     if args.csv:
-        save_to_csv(all_results)
-
+        save_to_csv(final_data)
 
 if __name__ == "__main__":
     main()
@@ -149,83 +165,54 @@ if __name__ == "__main__":
 
 ---
 
-## 🔎 Example Output
-
-```
-[+] Running ping sweep on 192.168.1.0/24...
-
-=== Hosts UP ===
-192.168.1.10
-192.168.1.20
-
-[+] Scanning ports 1–1024 on 192.168.1.10...
-
-=== Results for 192.168.1.10 ===
-192.168.1.10 : 22/tcp : open (ssh)
-192.168.1.10 : 80/tcp : open (http)
-```
-
----
-
 ## 🧪 How It Works
 
-### 1. Ping Sweep  
-Uses Nmap with:
+### 1️⃣ Resource Allocation (Threading)
 
-- `-n` → disable DNS resolution  
-- `-sn` → ping scan only  
+Uses a **Thread Pool** so multiple hosts are scanned simultaneously instead of sequentially, significantly reducing total scan time.
 
-### 2. Port Scan  
-For each host:
+### 2️⃣ Intelligent Discovery
 
-```
-nmap <host> 1-1024
-```
+Performs a **Ping Sweep (`-sn`)** first to detect live hosts and avoid scanning inactive IP addresses.
 
-### 3. Result Parsing  
-Extracts:
+### 3️⃣ Deep Enumeration
 
-- port  
-- protocol  
-- state  
-- service  
-
-### 4. CSV Export  
-Uses Python’s built‑in `csv` module.
-
----
-
-## 🎓 Why I Built This
-
-This project helps me improve:
-
-- Python automation  
-- Network enumeration  
-- Nmap scripting  
-- Cybersecurity tooling  
-
-It builds on the previous TCP port scanner and moves toward more advanced scanning techniques.
+- Scans ports **1–1024**
+- Detects service versions with `-sV`
+- Attempts OS fingerprinting with `-O`
 
 ---
 
 ## 🚀 Future Improvements
 
-- Asynchronous scanning  
-- Multi-threading  
-- Service version detection  
-- OS detection  
-- HTML/JSON reporting  
+- 🕸️ Asynchronous implementation using `asyncio`  
+- 📊 Web dashboard (Flask or Streamlit)  
+- 🛡️ IDS/IPS evasion techniques  
+- 📦 Dockerized version  
+- 📈 Scan statistics & performance metrics  
 
 ---
 
 ## ⚙️ Requirements
 
-- Python 3.10+  
-- python‑nmap  
-- Nmap installed and available in PATH  
+- **Python 3.10+**
+- **python-nmap**
+- **Nmap installed and in PATH**
+
+Install dependency:
+
+```bash
+pip install python-nmap
+```
+
+Verify Nmap:
+
+```bash
+nmap --version
+```
 
 ---
 
 ## 📂 License
 
-MIT License – free to use, modify, and learn from.
+MIT License – free to use and modify.
